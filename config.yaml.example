@@ -1,0 +1,23 @@
+# Pi Audio Client Configuration
+
+server:
+  url: "http://100.96.134.76:8099"  # Hermes gateway Pi adapter
+  api_key: ""  # Optional API key
+  device_id: "pi-audio-1"  # Device ID for session tracking
+
+audio:
+  input_device: null  # USB mic (null = default)
+  output_device: null  # Speaker/headphones (null = default)
+  sample_rate: 16000
+  chunk_size: 1024
+
+gpio:
+  led_idle: 6       # Green LED (physical pin 31)
+  led_listening: 13  # Red LED (physical pin 33)
+  button_ptt: 19     # Push-to-talk button (physical pin 35)
+  button_cancel: 5   # Cancel button (physical pin 29)
+
+state:
+  timeout_idle: 30  # Seconds before idle timeout
+  timeout_recording: 30  # Maximum recording time
+  timeout_speaking: 60  # Maximum speaking time

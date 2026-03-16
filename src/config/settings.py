@@ -1,0 +1,105 @@
+"""Configuration settings for Pi Audio Client."""
+
+import os
+from pathlib import Path
+from typing import Optional
+from pydantic import BaseModel, Field
+import yaml
+
+CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.yaml"
+
+
+class ServerConfig(BaseModel):
+    """Server configuration.
+    
+    Default: hermes-agent on your Mac (100.96.134.76)
+    Change this to connect to a different hermes server.
+    """
+    url: str = Field(default="http://100.96.134.76:8099", description="Hermes server URL (Mac)")
+    api_key: Optional[str] = Field(default=None, description="API key for server")
+    device_id: str = Field(default="pi-audio-1", description="Device ID for session tracking")
+
+
+class AudioConfig(BaseModel):
+    """Audio configuration."""
+    input_device: Optional[str] = Field(default=None, description="Input device name (None = default)")
+    output_device: Optional[str] = Field(default=None, description="Output device name (None = default)")
+    sample_rate: int = Field(default=16000, description="Sample rate in Hz")
+    chunk_size: int = Field(default=1024, description="Audio chunk size")
+
+
+class GPIOConfig(BaseModel):
+    """GPIO configuration.
+    
+    Default pins tested and working on Pi Zero W:
+    - GPIO 6: Green LED
+    - GPIO 13: Red LED  
+    - GPIO 19: PTT Button
+    - GPIO 5: Cancel Button
+    """
+    led_idle: int = Field(default=6, description="GPIO pin for idle LED (green)")
+    led_listening: int = Field(default=13, description="GPIO pin for listening LED (red)")
+    button_ptt: int = Field(default=19, description="GPIO pin for push-to-talk button")
+    button_cancel: int = Field(default=5, description="GPIO pin for cancel button")
+
+
+class StateConfig(BaseModel):
+    """State timeout configuration."""
+    timeout_idle: int = Field(default=30, description="Seconds before idle timeout")
+    timeout_recording: int = Field(default=30, description="Maximum recording time")
+    timeout_speaking: int = Field(default=60, description="Maximum speaking time")
+
+
+class Config(BaseModel):
+    """Main configuration."""
+    server: ServerConfig = Field(default_factory=ServerConfig)
+    audio: AudioConfig = Field(default_factory=AudioConfig)
+    gpio: GPIOConfig = Field(default_factory=GPIOConfig)
+    state: StateConfig = Field(default_factory=StateConfig)
+
+    @classmethod
+    def load(cls, path: Optional[Path] = None) -> "Config":
+        """Load configuration from YAML file."""
+        path = path or CONFIG_PATH
+        
+        if not path.exists():
+            # Create default config
+            config = cls()
+            config.save(path)
+            return config
+        
+        with open(path, "r") as f:
+            data = yaml.safe_load(f) or {}
+        
+        return cls(**data)
+
+    def save(self, path: Optional[Path] = None) -> None:
+        """Save configuration to YAML file."""
+        path = path or CONFIG_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(path, "w") as f:
+            yaml.dump(self.model_dump(), f, default_flow_style=False)
+
+    def __str__(self) -> str:
+        """String representation."""
+        return f"Config(server={self.server.url}, audio_sr={self.audio.sample_rate}, gpio_ptt={self.gpio.button_ptt})"
+
+
+# Global config instance
+_config: Optional[Config] = None
+
+
+def load_config(path: Optional[Path] = None) -> Config:
+    """Get or load configuration."""
+    global _config
+    if _config is None:
+        _config = Config.load(path)
+    return _config
+
+
+def reload_config(path: Optional[Path] = None) -> Config:
+    """Force reload configuration."""
+    global _config
+    _config = Config.load(path)
+    return _config

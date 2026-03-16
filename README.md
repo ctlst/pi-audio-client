@@ -32,10 +32,10 @@ The Pi is a **platform adapter** in the hermes gateway — like Telegram or Disc
 |---------------|------|-------------|
 | Green LED      | 6    | 31          |
 | Red LED        | 13   | 33          |
-| PTT Button     | 19   | 35          |
-| Cancel Button  | 5    | 29          |
+| PTT Button     | 25   | 22          |
+| Cancel Button  | 26   | 37          |
 
-Buttons connect to GPIO and GND (internal pull-up enabled). LEDs connect GPIO -> Anode -> Resistor -> GND.
+Buttons need external 10k ohm pull-up resistors to 3.3V to avoid noise on breadboard/long wire setups. See [docs/hardware.md](docs/hardware.md) for full wiring details.
 
 ## Setup
 
@@ -93,11 +93,13 @@ Buttons connect to GPIO and GND (internal pull-up enabled). LEDs connect GPIO ->
 
 ## Usage
 
-- **Press and hold PTT button** - red LED lights up, recording starts
-- **Release PTT** - audio is sent to hermes, red LED blinks (processing)
-- **Response plays** - green LED blinks while speaking
-- **Idle** - solid green LED
-- **Cancel button** - stops current recording
+- **Hold PTT** — red LED solid, recording. Release to send. You can send multiple messages without waiting for responses.
+- **Tap PTT** — plays the next queued response. Green LED blinks when new messages are waiting.
+- **Tap Cancel** — stops current audio playback.
+- **Double-tap Cancel** — replays the last message.
+- **Idle** — solid green LED (no messages waiting).
+
+Responses arrive asynchronously (10-30s). Green LED blinks when one or more responses are queued. Tap PTT to play them in order. See [docs/interaction-design.md](docs/interaction-design.md) for the full interaction model.
 
 ## Configuration
 
@@ -116,8 +118,8 @@ audio:
 gpio:
   led_idle: 6                        # green LED pin
   led_listening: 13                  # red LED pin
-  button_ptt: 19                     # push-to-talk pin
-  button_cancel: 5                   # cancel pin
+  button_ptt: 25                     # push-to-talk pin
+  button_cancel: 26                  # cancel pin
 ```
 
 ## Session Logging
@@ -131,6 +133,7 @@ hermes sessions export out.jsonl --source pi
 
 ## Troubleshooting
 
+- **PulseAudio conflicts**: PulseAudio must be disabled — it fights with ALSA for the USB audio device. Run `systemctl --user disable pulseaudio.socket pulseaudio.service && systemctl --user stop pulseaudio.socket pulseaudio.service`. Verify with `pactl info` (should fail).
 - **No audio**: Check `arecord -l` and `aplay -l` for USB device. Ensure `sample_rate` matches device (run `python3 -c "import pyaudio; pa=pyaudio.PyAudio(); print(pa.get_device_info_by_index(0))"` to check).
 - **Health check fails**: Verify Mac IP, port 8099 open, `PI_ENABLED=true` in `~/.hermes/.env`, gateway restarted.
 - **LEDs not lighting**: Check GPIO pins match wiring, test with `python3 -c "from gpiozero import LED; LED(6).on()"`.

@@ -40,10 +40,10 @@ class LEDController:
             logger.debug("LED state: listening")
     
     def set_processing(self) -> None:
-        """Set LED to processing state (both off or blinking)."""
+        """Set LED to processing state (red slow blink — waiting for hermes)."""
         with self._state_lock:
             self.idle_led.off()
-            self.listening_led.blink(on_time=0.1, off_time=0.1)
+            self.listening_led.blink(on_time=0.3, off_time=0.3)
             self._current_state = "processing"
             logger.debug("LED state: processing")
     

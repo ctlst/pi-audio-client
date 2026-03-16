@@ -20,7 +20,7 @@ class ButtonController:
             ptt_pin: GPIO pin for push-to-talk button
             cancel_pin: GPIO pin for cancel button (optional)
         """
-        self.ptt_button = Button(ptt_pin, pull_up=True, bounce_time=0.05)
+        self.ptt_button = Button(ptt_pin, pull_up=True, bounce_time=0.3)
         self.cancel_button: Optional[Button] = None
         self._cancel_pin = cancel_pin
 

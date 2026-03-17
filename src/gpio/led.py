@@ -48,12 +48,20 @@ class LEDController:
             logger.debug("LED state: processing")
     
     def set_speaking(self) -> None:
-        """Set LED to speaking state (green blinking)."""
+        """Set LED to speaking state (green blinking fast)."""
         with self._state_lock:
             self.idle_led.blink(on_time=0.2, off_time=0.2)
             self.listening_led.off()
             self._current_state = "speaking"
             logger.debug("LED state: speaking")
+
+    def set_message_waiting(self) -> None:
+        """Set LED to message waiting state (green slow blink)."""
+        with self._state_lock:
+            self.idle_led.blink(on_time=0.5, off_time=0.5)
+            self.listening_led.off()
+            self._current_state = "message_waiting"
+            logger.debug("LED state: message_waiting")
     
     def set_error(self) -> None:
         """Set LED to error state (red blinking fast)."""

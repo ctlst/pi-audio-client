@@ -11,11 +11,11 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.yaml"
 
 class ServerConfig(BaseModel):
     """Server configuration.
-    
-    Default: hermes-agent on your Mac (100.96.134.76)
-    Change this to connect to a different hermes server.
+
+    Set via config.yaml or environment variables:
+      PI_SERVER_URL, PI_API_KEY, PI_DEVICE_ID
     """
-    url: str = Field(default="http://100.96.134.76:8099", description="Hermes server URL (Mac)")
+    url: str = Field(default="http://localhost:8099", description="Hermes server URL")
     api_key: Optional[str] = Field(default=None, description="API key for server")
     device_id: str = Field(default="pi-audio-1", description="Device ID for session tracking")
 
@@ -91,10 +91,21 @@ _config: Optional[Config] = None
 
 
 def load_config(path: Optional[Path] = None) -> Config:
-    """Get or load configuration."""
+    """Get or load configuration.
+
+    Environment variables override config.yaml values:
+      PI_SERVER_URL, PI_API_KEY, PI_DEVICE_ID
+    """
     global _config
     if _config is None:
         _config = Config.load(path)
+        # Env var overrides
+        if url := os.environ.get("PI_SERVER_URL"):
+            _config.server.url = url
+        if api_key := os.environ.get("PI_API_KEY"):
+            _config.server.api_key = api_key
+        if device_id := os.environ.get("PI_DEVICE_ID"):
+            _config.server.device_id = device_id
     return _config
 
 

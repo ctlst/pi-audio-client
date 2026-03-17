@@ -5,7 +5,7 @@ Push-to-talk audio thin client for Raspberry Pi Zero W. Connects to [hermes-agen
 ## Architecture
 
 ```
-Pi Zero W (10.1.8.63)                    Mac (100.96.134.76)
+Pi Zero W                                Mac / Server
 ┌──────────────────────┐                ┌─────────────────────────┐
 │ USB Mic → WAV ───────── POST /pi/audio ──→ hermes gateway       │
 │                      │                │   ├─ Whisper STT         │
@@ -78,11 +78,11 @@ Buttons need external 10k ohm pull-up resistors to 3.3V to avoid noise on breadb
    cp config.yaml.example config.yaml
    nano config.yaml
    ```
-   Set `server.url` to your Mac's IP and port (e.g., `http://100.96.134.76:8099`).
+   Set `server.url` to your Mac's IP and port, or set the `PI_SERVER_URL` env var.
 
 4. Test connectivity:
    ```bash
-   curl http://100.96.134.76:8099/pi/health
+   curl http://<your-mac-ip>:8099/pi/health
    ```
 
 5. Run:
@@ -107,8 +107,8 @@ See `config.yaml.example` for all options:
 
 ```yaml
 server:
-  url: "http://100.96.134.76:8099"  # hermes gateway address
-  api_key: ""                        # optional auth key
+  url: "http://localhost:8099"       # hermes gateway address (or PI_SERVER_URL env var)
+  api_key: ""                        # optional auth key (or PI_API_KEY env var)
   device_id: "pi-audio-1"           # session identifier
 
 audio:

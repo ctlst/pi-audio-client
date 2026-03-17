@@ -5,11 +5,18 @@ Connects to hermes-agent on your Mac which handles:
 - Audio transcription (whisper tool)
 - LLM inference (via model server)
 - TTS generation (tts tool)
+
+Interaction model:
+- Hold PTT (>0.5s): record and send audio to hermes
+- Tap PTT (<0.5s): play next queued response
+- Tap Cancel: stop current playback
+- Responses queue up and green LED blinks when messages are waiting
 """
 
 import logging
 import signal
 import time
+import queue
 from threading import Thread, Event, Lock
 from typing import Optional
 
@@ -26,6 +33,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Hold vs tap threshold (seconds)
+HOLD_THRESHOLD = 0.5
 
 
 class PiAudioClient:
@@ -66,44 +76,59 @@ class PiAudioClient:
             device_id=self.config.server.device_id,
         )
 
-        # State tracking
-        self._last_activity = time.time()
+        # Recording state
         self._recording = False
         self._recording_buffer = []
         self._buffer_lock = Lock()
         self._press_time = 0.0
         self._record_thread: Optional[Thread] = None
 
+        # Playback state
+        self._playing = False
+        self._stop_playback = Event()
+        self._last_audio: Optional[np.ndarray] = None
+
+        # Message queue — hermes responses waiting to be played
+        self._message_queue: queue.Queue = queue.Queue()
+        self._pending_count = 0
+        self._pending_lock = Lock()
+
     def setup(self) -> None:
         """Setup all components."""
         logger.info("Setting up Pi Audio Client...")
 
-        # Start audio
         self.audio_input.start()
         self.audio_output.start()
 
-        # Cancel button callback
+        # Cancel button callback (cancel is fine as callback — it's simple)
         if self.buttons.cancel_button:
             self.buttons.set_cancel_callback(self._on_cancel_pressed)
 
-        # Set initial state
         self.led.set_idle()
 
-        # Health check
         if not self.hermes.health_check():
             logger.warning("Hermes server not reachable!")
 
         logger.info("Setup complete")
 
+    # ------------------------------------------------------------------
+    # PTT: hold to record
+    # ------------------------------------------------------------------
+
     def _on_ptt_pressed(self) -> None:
-        """Handle PTT button press (GPIO callback thread)."""
-        logger.info("PTT pressed - starting recording")
+        """Handle PTT button press — note the time, don't record yet."""
         self._press_time = time.time()
+        self._recording = False
+        self._record_thread = None
+        logger.debug("PTT pressed")
+
+    def _start_recording(self) -> None:
+        """Start recording after hold threshold is reached."""
+        logger.info("PTT held — recording")
         self._recording = True
         self.led.set_listening()
         with self._buffer_lock:
             self._recording_buffer = []
-        # Start recording thread — reads audio in background
         self._record_thread = Thread(target=self._record_loop, daemon=True)
         self._record_thread.start()
 
@@ -120,14 +145,18 @@ class PiAudioClient:
                 break
 
     def _on_ptt_released(self) -> None:
-        """Handle PTT button release (GPIO callback thread)."""
+        """Handle PTT release — either send audio (hold) or play message (tap)."""
+        hold_time = time.time() - self._press_time
+
+        # Tap: play next queued message
         if not self._recording:
+            logger.info("PTT tap (%.2fs) — play next message", hold_time)
+            self._play_next_message()
             return
 
-        hold_time = time.time() - self._press_time
+        # Hold: stop recording and send to hermes
         self._recording = False
 
-        # Wait for record thread to finish its current read
         if self._record_thread:
             self._record_thread.join(timeout=1.0)
 
@@ -135,72 +164,137 @@ class PiAudioClient:
             buffer = list(self._recording_buffer)
             self._recording_buffer = []
 
-        if not buffer or hold_time < 0.3:
-            logger.debug("Ignoring short press (%.2fs, %d chunks)", hold_time, len(buffer))
-            self.led.set_idle()
+        if not buffer:
+            logger.warning("No audio recorded")
+            self._update_led()
             return
-
-        logger.info("PTT released - processing audio (held %.1fs)", hold_time)
 
         audio_data = np.concatenate(buffer)
         duration = len(audio_data) / self.config.audio.sample_rate
-        logger.info(f"Processing {len(audio_data)} samples ({duration:.1f}s)")
+        logger.info("Sending %.1fs audio to hermes", duration)
 
         self.led.set_processing()
 
+        with self._pending_lock:
+            self._pending_count += 1
+
+        # Send in background — don't block the polling loop
+        thread = Thread(target=self._hermes_worker, args=(audio_data,), daemon=True)
+        thread.start()
+
+    # ------------------------------------------------------------------
+    # PTT tap: play next queued message
+    # ------------------------------------------------------------------
+
+    def _play_next_message(self) -> None:
+        """Play the next message from the queue."""
+        if self._message_queue.empty():
+            logger.info("No messages to play")
+            self._update_led()
+            return
+
+        text, audio = self._message_queue.get()
+        logger.info("Playing: %s", text[:80])
+        Thread(target=self._play_response, args=(audio,), daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Cancel button
+    # ------------------------------------------------------------------
+
+    def _on_cancel_pressed(self) -> None:
+        """Cancel button — stop playback if playing, otherwise replay last."""
+        if self._playing:
+            logger.info("Stopping playback")
+            self._stop_playback.set()
+        elif self._last_audio is not None and len(self._last_audio) > 0:
+            logger.info("Replaying last response")
+            Thread(target=self._play_response, args=(self._last_audio,), daemon=True).start()
+        else:
+            logger.info("Cancel — nothing to replay")
+
+    # ------------------------------------------------------------------
+    # Hermes worker (background thread)
+    # ------------------------------------------------------------------
+
+    def _hermes_worker(self, audio_data: np.ndarray) -> None:
+        """Send audio to hermes and queue the response."""
         try:
             response_text, tts_audio = self.hermes.send_audio_and_get_response(
                 audio_data,
                 self.config.audio.sample_rate
             )
 
-            logger.info(f"Response: {response_text[:100]}")
+            logger.info("Response: %s", response_text[:100])
 
             if len(tts_audio) > 0:
-                logger.info(f"Playing {len(tts_audio)} samples ({len(tts_audio)/self.config.audio.sample_rate:.1f}s)")
-                self.led.set_speaking()
-                self._play_audio(tts_audio)
+                self._message_queue.put((response_text, tts_audio))
+                logger.info("Message queued (%d waiting)", self._message_queue.qsize())
             else:
-                logger.warning("No TTS audio received — nothing to play")
-
-            self.led.set_idle()
-            self._last_activity = time.time()
+                logger.warning("No TTS audio in response")
 
         except Exception as e:
-            logger.error(f"Error processing audio: {e}", exc_info=True)
-            self.led.set_error()
-            time.sleep(2)
-            self.led.set_idle()
+            logger.error("Hermes error: %s", e, exc_info=True)
 
-    def _on_cancel_pressed(self) -> None:
-        """Handle cancel button press."""
-        logger.info("Cancel pressed - stopping recording")
-        self._recording = False
-        with self._buffer_lock:
-            self._recording_buffer = []
-        self.led.set_idle()
+        finally:
+            with self._pending_lock:
+                self._pending_count -= 1
+            self._update_led()
 
-    def _play_audio(self, audio_data: np.ndarray) -> None:
-        """Play audio data."""
+    # ------------------------------------------------------------------
+    # Audio playback
+    # ------------------------------------------------------------------
+
+    def _play_response(self, audio_data: np.ndarray) -> None:
+        """Play audio response through speaker."""
+        self._playing = True
+        self._stop_playback.clear()
+        self._last_audio = audio_data
+        self.led.set_speaking()
+
         chunk_size = self.config.audio.chunk_size
         for i in range(0, len(audio_data), chunk_size):
-            if self._shutdown_event.is_set():
+            if self._shutdown_event.is_set() or self._stop_playback.is_set():
+                logger.info("Playback stopped")
                 break
-            chunk = audio_data[i:i+chunk_size]
+            chunk = audio_data[i:i + chunk_size]
             self.audio_output.write_chunk(chunk)
+
+        self._playing = False
+        self._update_led()
+
+    # ------------------------------------------------------------------
+    # LED state management
+    # ------------------------------------------------------------------
+
+    def _update_led(self) -> None:
+        """Set LED based on current state."""
+        if self._recording:
+            self.led.set_listening()
+        elif self._playing:
+            self.led.set_speaking()
+        elif not self._message_queue.empty():
+            self.led.set_message_waiting()
+        elif self._pending_count > 0:
+            self.led.set_processing()
+        else:
+            self.led.set_idle()
+
+    # ------------------------------------------------------------------
+    # Main loop — polling, no GPIO callbacks for PTT
+    # ------------------------------------------------------------------
 
     def run(self) -> None:
         """Run the main loop.
 
         Polls PTT button state every 20ms. Recording runs in a
         dedicated thread. No GPIO callbacks for PTT — polling is
-        more reliable on noisy wiring.
+        more reliable on Pi Zero W.
         """
         logger.info("Starting Pi Audio Client...")
         self.setup()
         self._running = True
 
-        logger.info("Ready — press and hold PTT to speak")
+        logger.info("Ready — hold PTT to speak, tap PTT to play messages")
 
         was_pressed = False
         while not self._shutdown_event.is_set():
@@ -208,8 +302,13 @@ class PiAudioClient:
 
             if pressed and not was_pressed:
                 self._on_ptt_pressed()
-            elif was_pressed and not pressed and self._recording:
+            elif pressed and not self._recording and self._press_time > 0:
+                # Still holding — start recording once past threshold
+                if time.time() - self._press_time >= HOLD_THRESHOLD:
+                    self._start_recording()
+            elif was_pressed and not pressed:
                 self._on_ptt_released()
+                self._press_time = 0.0
 
             was_pressed = pressed
             time.sleep(0.02)
@@ -224,6 +323,7 @@ class PiAudioClient:
         self._running = False
         self._recording = False
         self._shutdown_event.set()
+        self._stop_playback.set()
 
         self.hermes.close()
         self.audio_input.stop()

@@ -1,8 +1,8 @@
 # Pi Audio Client Configuration
 
 server:
-  url: "http://100.96.134.76:8099"  # Hermes gateway Pi adapter
-  api_key: ""  # Optional API key
+  url: "http://localhost:8099"  # Hermes gateway URL (or set PI_SERVER_URL env var)
+  api_key: ""  # Optional API key (or set PI_API_KEY env var)
   device_id: "pi-audio-1"  # Device ID for session tracking
 
 audio:

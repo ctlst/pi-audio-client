@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Quick test script for Pi Audio Client."""
 
+import os
 import sys
 import time
 from gpiozero import LED, Button
@@ -131,7 +132,7 @@ try:
     import requests
     
     # Default URL (Mac hermes-agent)
-    url = "http://100.96.134.76:8081/v1"
+    url = os.environ.get("PI_SERVER_URL", "http://localhost:8081/v1")
     print(f"Checking connection to: {url}")
     
     response = requests.get(f"{url}/health", timeout=5)

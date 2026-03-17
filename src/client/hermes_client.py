@@ -33,7 +33,7 @@ class HermesClient:
         """Initialize hermes client.
 
         Args:
-            url: Gateway base URL (e.g., http://100.96.134.76:8099)
+            url: Gateway base URL (e.g., http://your-mac-ip:8099)
             api_key: Optional API key for authentication
             device_id: Unique device identifier for session tracking
         """

@@ -1,0 +1,35 @@
+diff --git a/gateway/config.py b/gateway/config.py
+index 55a811aa..8115d6b0 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -47,6 +47,7 @@ class Platform(Enum):
+     SMS = "sms"
+     DINGTALK = "dingtalk"
+     API_SERVER = "api_server"
++    PI = "pi"
+ 
+ 
+ @dataclass
+@@ -674,6 +675,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
+         if api_server_host:
+             config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
+ 
++    # Pi Audio Client
++    pi_enabled = os.getenv("PI_ENABLED", "").lower() in ("true", "1", "yes")
++    pi_api_key = os.getenv("PI_API_KEY", "")
++    pi_port = os.getenv("PI_HTTP_PORT")
++    if pi_enabled:
++        if Platform.PI not in config.platforms:
++            config.platforms[Platform.PI] = PlatformConfig()
++        config.platforms[Platform.PI].enabled = True
++        if pi_api_key:
++            config.platforms[Platform.PI].extra["api_key"] = pi_api_key
++        if pi_port:
++            try:
++                config.platforms[Platform.PI].extra["port"] = int(pi_port)
++            except ValueError:
++                pass
++
+     # Session settings
+     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
+     if idle_minutes:

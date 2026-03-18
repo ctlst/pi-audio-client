@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 # Hold vs tap threshold (seconds)
 HOLD_THRESHOLD = 0.5
+# Maximum recording duration (seconds)
+MAX_RECORDING_SECS = 30
 
 
 class PiAudioClient:
@@ -134,12 +136,19 @@ class PiAudioClient:
 
     def _record_loop(self) -> None:
         """Read audio chunks while recording (runs in dedicated thread)."""
+        max_chunks = int((self.config.audio.sample_rate * MAX_RECORDING_SECS) / self.config.audio.chunk_size)
+        chunks_read = 0
         while self._recording and not self._shutdown_event.is_set():
             try:
                 chunk = self.audio_input.read_chunk()
                 with self._buffer_lock:
                     if self._recording:
                         self._recording_buffer.append(chunk)
+                chunks_read += 1
+                if chunks_read >= max_chunks:
+                    logger.warning("Recording capped at %ds", MAX_RECORDING_SECS)
+                    self._recording = False
+                    break
             except Exception as e:
                 logger.error(f"Recording error: {e}")
                 break

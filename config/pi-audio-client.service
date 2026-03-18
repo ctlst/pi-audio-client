@@ -1,0 +1,16 @@
+[Unit]
+Description=Pi Audio Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/pi-audio-client
+ExecStart=/usr/bin/python3 -m src.main
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

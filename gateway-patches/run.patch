@@ -1,0 +1,28 @@
+diff --git a/gateway/run.py b/gateway/run.py
+index ea9f2a28..bd3bf081 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -1169,6 +1169,14 @@ class GatewayRunner:
+                 return None
+             return APIServerAdapter(config)
+ 
++        elif platform == Platform.PI:
++            try:
++                from gateway.platforms.pi import PiAdapter
++                return PiAdapter(config)
++            except ImportError:
++                logger.warning("Pi: aiohttp not installed")
++                return None
++
+         return None
+     
+     def _is_user_authorized(self, source: SessionSource) -> bool:
+@@ -1187,6 +1195,8 @@ class GatewayRunner:
+         # connection, so HA events are always authorized.
+         if source.platform == Platform.HOMEASSISTANT:
+             return True
++        if source.platform == Platform.PI:
++            return True
+ 
+         user_id = source.user_id
+         if not user_id:

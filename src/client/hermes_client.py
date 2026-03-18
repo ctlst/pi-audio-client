@@ -75,7 +75,7 @@ class HermesClient:
             f"{self.url}/pi/audio",
             data=wav_bytes,
             headers={"Content-Type": "audio/wav"},
-            timeout=120,
+            timeout=600,
         )
         response.raise_for_status()
         data = response.json()

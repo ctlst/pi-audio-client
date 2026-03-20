@@ -24,6 +24,7 @@ git apply <path-to-pi-audio-client>/gateway-patches/run.patch
 #    PI_ENABLED=true
 #    PI_API_KEY=       (optional)
 #    PI_HTTP_PORT=8099 (optional, this is the default)
+#    PI_DEBUG_LOG_TRANSCRIPTS=false (optional)
 
 # 4. Restart the gateway
 hermes gateway restart
@@ -33,7 +34,7 @@ hermes gateway restart
 
 ### config.patch (gateway/config.py)
 - Adds `PI = "pi"` to the `Platform` enum
-- Adds env var loading for `PI_ENABLED`, `PI_API_KEY`, `PI_HTTP_PORT`
+- Adds env var loading for `PI_ENABLED`, `PI_API_KEY`, `PI_HTTP_PORT`, `PI_DEBUG_LOG_TRANSCRIPTS`
 
 ### run.patch (gateway/run.py)
 - Adds Pi adapter creation in `_create_adapter()` (imports `PiAdapter` from `gateway.platforms.pi`)
@@ -41,6 +42,7 @@ hermes gateway restart
 
 ### pi.py (gateway/platforms/pi.py)
 - HTTP server adapter using aiohttp (listens on port 8099)
+- Reads auth and port from `extra["api_key"]` and `extra["port"]`, matching `config.patch`
 - Endpoints: `POST /pi/audio`, `GET /pi/audio/{filename}`, `GET /pi/health`
 - Fallback TTS: if the LLM agent doesn't call `text_to_speech`, the gateway generates Edge TTS directly so the Pi always gets audio back
 - 10MB max request size (supports up to ~30s recordings at 48kHz)

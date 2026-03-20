@@ -81,7 +81,6 @@ class HermesClient:
         data = response.json()
 
         response_text = data.get("text", "")
-        logger.info("Response: %s", response_text[:100])
 
         # Fetch TTS audio if available
         audio_url = data.get("audio_url")

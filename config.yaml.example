@@ -8,7 +8,7 @@ server:
 audio:
   input_device: null  # USB mic (null = default)
   output_device: null  # Speaker/headphones (null = default)
-  sample_rate: 16000
+  sample_rate: 16000  # Start here unless your device requires a different rate
   chunk_size: 1024
 
 gpio:
@@ -18,6 +18,9 @@ gpio:
   button_cancel: 5   # Cancel button (physical pin 29)
 
 state:
-  timeout_idle: 30  # Seconds before idle timeout
-  timeout_recording: 30  # Maximum recording time
-  timeout_speaking: 60  # Maximum speaking time
+  hold_threshold: 0.5  # Seconds to hold PTT before recording
+  max_recording_secs: 30  # Maximum recording duration
+  timeout_idle: 30  # Reserved for future idle timeout handling
+  timeout_speaking: 60  # Reserved for future speaking timeout handling
+
+debug_log_transcripts: false  # Set true only when debugging conversational content

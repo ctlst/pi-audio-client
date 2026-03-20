@@ -62,6 +62,7 @@ Add to `~/.hermes/.env`:
 PI_ENABLED=true
 # PI_API_KEY=optional-secret    # if you want auth
 # PI_HTTP_PORT=8099             # default
+# PI_DEBUG_LOG_TRANSCRIPTS=false
 ```
 
 Restart the gateway:
@@ -120,6 +121,7 @@ python3 -c "import pyaudio; pa=pyaudio.PyAudio(); print(pa.get_device_info_by_in
 ```
 
 Set `server.url` to your Mac/server IP and port (e.g., `http://192.168.1.100:8099`), or set the `PI_SERVER_URL` environment variable. Set `audio.input_device` and `audio.output_device` to match your USB audio device name (e.g., `"EarPods"`). Set `audio.sample_rate` to match your device's native rate (commonly 48000 for USB audio).
+If your hardware works at 16000 Hz, keep the default settings first and only raise the sample rate or chunk size if the device requires it.
 
 Test connectivity:
 
@@ -177,7 +179,7 @@ sudo journalctl -u pi-audio-client -f
 4. Tap PTT to play the response.
 5. Press cancel to replay, or hold PTT to send another message.
 
-Responses arrive asynchronously. You can send multiple messages before playing any responses — they queue up in order.
+Responses arrive asynchronously. You can send multiple messages before playing any responses, and playback stays serialized so queued responses do not overlap.
 
 ## Configuration
 
@@ -192,21 +194,29 @@ server:
 audio:
   input_device: null                 # USB mic name (null = default)
   output_device: null                # speaker name (null = default)
-  sample_rate: 48000                 # must match your USB audio device
-  chunk_size: 4096
+  sample_rate: 16000                 # start here unless your device needs a different rate
+  chunk_size: 1024
 
 gpio:
   led_idle: 6                        # green LED pin
   led_listening: 13                  # red LED pin
   button_ptt: 19                     # push-to-talk pin
   button_cancel: 5                   # cancel pin
+
+state:
+  hold_threshold: 0.5                # seconds to hold PTT before recording
+  max_recording_secs: 30             # hard cap for each recording
+
+debug_log_transcripts: false         # set true only for debugging
 ```
 
-Environment variables `PI_SERVER_URL`, `PI_API_KEY`, and `PI_DEVICE_ID` override config.yaml values.
+Environment variables `PI_SERVER_URL`, `PI_API_KEY`, `PI_DEVICE_ID`, `PI_HOLD_THRESHOLD`, `PI_MAX_RECORDING_SECS`, and `PI_DEBUG_LOG_TRANSCRIPTS` override `config.yaml` values.
 
 ## Session Logging
 
 All Pi conversations are logged in hermes:
+
+Transcript text is not logged by this client or the Pi gateway patch unless `debug_log_transcripts` or `PI_DEBUG_LOG_TRANSCRIPTS=true` is set.
 
 ```bash
 hermes sessions list --source pi
@@ -221,7 +231,7 @@ hermes sessions export out.jsonl --source pi
 - **LEDs not lighting**: Check GPIO pins match wiring, test with `python3 -c "from gpiozero import LED; LED(6).on()"`.
 - **Instant green on PTT release / no audio**: The Pi Zero W USB controller (`dwc2`) degrades over time. Reboot the Pi.
 - **413 Request Entity Too Large**: Recording exceeded the gateway's max request size. The Pi caps recordings at 30s, and the gateway patch sets a 10MB limit.
-- **Transcription errors**: Check that `stt.provider` is set to `local` and `stt.local.model` is a valid faster-whisper model (e.g., `base`, `small`, `medium`) in `~/.hermes/config.yaml`.
+- **Transcription errors**: STT configuration lives in hermes, not in this repo. Check `~/.hermes/config.yaml` and confirm the configured backend and model there.
 
 ## Known Issues
 

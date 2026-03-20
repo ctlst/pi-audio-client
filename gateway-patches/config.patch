@@ -18,6 +18,7 @@ index 55a811aa..8115d6b0 100644
 +    pi_enabled = os.getenv("PI_ENABLED", "").lower() in ("true", "1", "yes")
 +    pi_api_key = os.getenv("PI_API_KEY", "")
 +    pi_port = os.getenv("PI_HTTP_PORT")
++    pi_debug_log_transcripts = os.getenv("PI_DEBUG_LOG_TRANSCRIPTS", "").lower() in ("true", "1", "yes")
 +    if pi_enabled:
 +        if Platform.PI not in config.platforms:
 +            config.platforms[Platform.PI] = PlatformConfig()
@@ -29,6 +30,8 @@ index 55a811aa..8115d6b0 100644
 +                config.platforms[Platform.PI].extra["port"] = int(pi_port)
 +            except ValueError:
 +                pass
++        if pi_debug_log_transcripts:
++            config.platforms[Platform.PI].extra["debug_log_transcripts"] = True
 +
      # Session settings
      idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

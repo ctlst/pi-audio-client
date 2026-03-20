@@ -44,10 +44,11 @@ class GPIOConfig(BaseModel):
 
 
 class StateConfig(BaseModel):
-    """State timeout configuration."""
-    timeout_idle: int = Field(default=30, description="Seconds before idle timeout")
-    timeout_recording: int = Field(default=30, description="Maximum recording time")
-    timeout_speaking: int = Field(default=60, description="Maximum speaking time")
+    """Runtime interaction thresholds."""
+    hold_threshold: float = Field(default=0.5, description="Seconds to hold PTT before recording")
+    max_recording_secs: int = Field(default=30, description="Maximum recording time in seconds")
+    timeout_idle: int = Field(default=30, description="Reserved for future idle timeout handling")
+    timeout_speaking: int = Field(default=60, description="Reserved for future speaking timeout handling")
 
 
 class Config(BaseModel):
@@ -56,6 +57,10 @@ class Config(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     gpio: GPIOConfig = Field(default_factory=GPIOConfig)
     state: StateConfig = Field(default_factory=StateConfig)
+    debug_log_transcripts: bool = Field(
+        default=False,
+        description="Log transcript and response text content when debugging",
+    )
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "Config":
@@ -90,6 +95,23 @@ class Config(BaseModel):
 _config: Optional[Config] = None
 
 
+def _apply_env_overrides(config: Config) -> Config:
+    """Apply environment variable overrides to a config object."""
+    if url := os.environ.get("PI_SERVER_URL"):
+        config.server.url = url
+    if api_key := os.environ.get("PI_API_KEY"):
+        config.server.api_key = api_key
+    if device_id := os.environ.get("PI_DEVICE_ID"):
+        config.server.device_id = device_id
+    if hold_threshold := os.environ.get("PI_HOLD_THRESHOLD"):
+        config.state.hold_threshold = float(hold_threshold)
+    if max_recording := os.environ.get("PI_MAX_RECORDING_SECS"):
+        config.state.max_recording_secs = int(max_recording)
+    if debug_transcripts := os.environ.get("PI_DEBUG_LOG_TRANSCRIPTS"):
+        config.debug_log_transcripts = debug_transcripts.lower() in ("1", "true", "yes", "on")
+    return config
+
+
 def load_config(path: Optional[Path] = None) -> Config:
     """Get or load configuration.
 
@@ -98,19 +120,12 @@ def load_config(path: Optional[Path] = None) -> Config:
     """
     global _config
     if _config is None:
-        _config = Config.load(path)
-        # Env var overrides
-        if url := os.environ.get("PI_SERVER_URL"):
-            _config.server.url = url
-        if api_key := os.environ.get("PI_API_KEY"):
-            _config.server.api_key = api_key
-        if device_id := os.environ.get("PI_DEVICE_ID"):
-            _config.server.device_id = device_id
+        _config = _apply_env_overrides(Config.load(path))
     return _config
 
 
 def reload_config(path: Optional[Path] = None) -> Config:
     """Force reload configuration."""
     global _config
-    _config = Config.load(path)
+    _config = _apply_env_overrides(Config.load(path))
     return _config

@@ -1,200 +1,198 @@
-"""Test PTT recording flow with simulated button presses.
-
-Verifies that:
-- Press starts recording and sets LED to listening (red)
-- Audio chunks accumulate in buffer while recording
-- Release grabs buffer, sends to hermes, sets LED to processing
-- After hermes responds, LED returns to idle
-"""
+"""Tests for PiAudioClient press-to-talk and playback flow."""
 
 import sys
 import time
-import queue
-from threading import Thread, Event, Lock
+from threading import Thread
+from types import SimpleNamespace
 from unittest.mock import MagicMock
-from types import ModuleType
 
 import numpy as np
 import pytest
 
-# Stub all Pi-specific modules before importing src.main
-for mod_name in [
-    'gpiozero', 'pyaudio', 'pydantic', 'yaml', 'requests',
-    'src.config', 'src.config.settings',
-    'src.gpio', 'src.gpio.led', 'src.gpio.buttons', 'src.gpio.taps',
-    'src.audio', 'src.audio.input', 'src.audio.output',
-    'src.client',
-]:
-    if mod_name not in sys.modules:
-        sys.modules[mod_name] = MagicMock()
+sys.modules.setdefault("gpiozero", MagicMock())
+sys.modules.setdefault("pyaudio", MagicMock())
+sys.modules.setdefault("pydantic", MagicMock())
+sys.modules.setdefault("yaml", MagicMock())
+sys.modules.setdefault("requests", MagicMock())
 
 from src.main import PiAudioClient
+
+
+def make_config(debug_log_transcripts: bool = False):
+    """Build a minimal config object for PiAudioClient tests."""
+    return SimpleNamespace(
+        gpio=SimpleNamespace(
+            led_idle=17,
+            led_listening=18,
+            button_ptt=20,
+            button_cancel=21,
+        ),
+        audio=SimpleNamespace(
+            sample_rate=16000,
+            chunk_size=1024,
+            input_device=None,
+            output_device=None,
+        ),
+        server=SimpleNamespace(
+            url="http://localhost:8099",
+            api_key="test-key",
+            device_id="test-device",
+        ),
+        state=SimpleNamespace(
+            hold_threshold=0.5,
+            max_recording_secs=30,
+            timeout_idle=30,
+            timeout_speaking=60,
+        ),
+        debug_log_transcripts=debug_log_transcripts,
+    )
 
 
 @pytest.fixture
 def client():
     """Create a PiAudioClient with mocked hardware."""
-    config = MagicMock()
-    config.gpio.led_idle = 17
-    config.gpio.led_listening = 18
-    config.gpio.button_ptt = 20
-    config.gpio.button_cancel = 21
-    config.audio.sample_rate = 16000
-    config.audio.chunk_size = 1024
-    config.audio.input_device = None
-    config.audio.output_device = None
-    config.server.url = "http://localhost:8081"
-    config.server.api_key = "test"
-    config.server.device_id = "test"
-    config.state.timeout_recording = 30
-
-    c = PiAudioClient(config)
-
-    # Replace components with mocks
-    c.led = MagicMock()
-    c.audio_input = MagicMock()
-    c.audio_input.read_chunk.return_value = np.zeros(1024, dtype=np.int16)
-    c.audio_output = MagicMock()
-    c.hermes = MagicMock()
-    c.hermes.health_check.return_value = True
-    c.hermes.send_audio_and_get_response.return_value = (
+    instance = PiAudioClient(make_config())
+    instance.led = MagicMock()
+    instance.audio_input = MagicMock()
+    instance.audio_input.read_chunk.return_value = np.zeros(1024, dtype=np.int16)
+    instance.audio_output = MagicMock()
+    instance.hermes = MagicMock()
+    instance.hermes.health_check.return_value = True
+    instance.hermes.send_audio_and_get_response.return_value = (
         "Hello world",
-        np.zeros(16000, dtype=np.int16),
+        np.zeros(2048, dtype=np.int16),
     )
+    return instance
 
-    yield c
+
+def wait_for(condition, timeout: float = 1.0) -> None:
+    """Poll until a condition becomes true."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if condition():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition not met before timeout")
 
 
-def test_press_starts_recording(client):
-    """PTT press should set recording flag and LED to listening."""
+def mark_recording_active(client) -> None:
+    """Simulate an active hold without starting the real recording thread."""
+    client._recording = True
+    client._record_thread = None
+
+
+def test_press_does_not_start_recording_until_hold_threshold(client):
+    """A press only marks the start time; recording begins after the hold threshold."""
+    before = time.time()
+
     client._on_ptt_pressed()
-
-    assert client._recording is True
-    client.led.set_listening.assert_called()
-
-
-def test_release_with_audio_sends_to_hermes(client):
-    """PTT release with buffered audio should send to hermes and set processing LED."""
-    client._on_ptt_pressed()
-
-    # Simulate main loop buffering chunks
-    for _ in range(20):
-        with client._buffer_lock:
-            client._recording_buffer.append(np.zeros(1024, dtype=np.int16))
-
-    client._on_ptt_release()
 
     assert client._recording is False
-    client.led.set_processing.assert_called()
-
-    # Wait for hermes worker thread
-    time.sleep(0.5)
-
-    client.hermes.send_audio_and_get_response.assert_called_once()
-    assert not client._message_queue.empty()
+    assert client._record_thread is None
+    assert client._press_time >= before
+    client.led.set_listening.assert_not_called()
 
 
-def test_release_with_empty_buffer_goes_idle(client):
-    """PTT release with no audio should go to idle LED."""
+def test_tap_release_plays_queued_message_without_sending_audio(client):
+    """A tap should dequeue a response instead of recording and sending audio."""
+    playback = MagicMock()
+    client._play_response = playback
+    client._message_queue.put(("Queued reply", np.ones(128, dtype=np.int16)))
     client._on_ptt_pressed()
-    # Don't add any chunks — empty buffer
-    client._on_ptt_release()
 
-    assert client._recording is False
-    client.led.set_idle.assert_called()
+    client._on_ptt_released()
 
-
-def test_release_with_empty_buffer_plays_queued_message(client):
-    """PTT tap (empty buffer) should play queued message if available."""
-    # Queue a message
-    client._message_queue.put(("Hello", np.zeros(1600, dtype=np.int16)))
-
-    client._on_ptt_pressed()
-    # Empty buffer — simulates a tap
-    client._on_ptt_release()
-
-    assert client._recording is False
+    wait_for(lambda: playback.called)
+    client.hermes.send_audio_and_get_response.assert_not_called()
     assert client._message_queue.empty()
 
 
-def test_led_returns_to_idle_after_hermes_response(client):
-    """After hermes responds, pending count should return to 0."""
+def test_hold_release_sends_audio_to_hermes_and_queues_response(client):
+    """A held PTT interaction should send buffered audio and queue the TTS response."""
     client._on_ptt_pressed()
+    mark_recording_active(client)
 
-    for _ in range(10):
-        with client._buffer_lock:
-            client._recording_buffer.append(np.zeros(1024, dtype=np.int16))
+    with client._buffer_lock:
+        client._recording_buffer = [
+            np.zeros(1024, dtype=np.int16),
+            np.ones(1024, dtype=np.int16),
+        ]
 
-    client._on_ptt_release()
+    client._on_ptt_released()
 
-    # Wait for hermes worker
-    time.sleep(0.5)
-
+    wait_for(lambda: client.hermes.send_audio_and_get_response.called)
+    client.hermes.send_audio_and_get_response.assert_called_once()
+    sent_audio = client.hermes.send_audio_and_get_response.call_args.args[0]
+    assert len(sent_audio) == 2048
     assert client._pending_count == 0
+    queued_text, queued_audio = client._message_queue.get_nowait()
+    assert queued_text == "Hello world"
+    assert len(queued_audio) == 2048
 
 
-def test_recording_flag_and_buffer_cleared_atomically(client):
-    """Release should clear recording and grab buffer under the same lock."""
+def test_recording_buffer_cleared_after_hold_release(client):
+    """Buffered chunks should be cleared after a held interaction is submitted."""
     client._on_ptt_pressed()
+    mark_recording_active(client)
 
-    for _ in range(5):
-        with client._buffer_lock:
-            client._recording_buffer.append(np.zeros(1024, dtype=np.int16))
-
-    client._on_ptt_release()
-
-    assert client._recording is False
     with client._buffer_lock:
-        assert len(client._recording_buffer) == 0
+        client._recording_buffer = [np.zeros(1024, dtype=np.int16) for _ in range(3)]
 
-    # Hermes should have been called with concatenated audio
-    time.sleep(0.5)
-    args = client.hermes.send_audio_and_get_response.call_args
-    audio_sent = args[0][0]
-    assert len(audio_sent) == 5 * 1024
+    client._on_ptt_released()
 
-
-def test_main_loop_reads_audio_when_not_recording(client):
-    """Main loop should read chunks even when not recording to prevent buffer overflow."""
-    client._recording = False
-
-    # Simulate main loop iterations
-    for _ in range(5):
-        chunk = client.audio_input.read_chunk()
-        if client._recording:
-            with client._buffer_lock:
-                client._recording_buffer.append(chunk)
-
-    # Audio was read 5 times even though not recording
-    assert client.audio_input.read_chunk.call_count == 5
-    # But nothing was buffered
-    assert len(client._recording_buffer) == 0
-
-
-def test_race_condition_release_during_append(client):
-    """Release happening between read and append should not lose buffer."""
-    client._on_ptt_pressed()
-
-    # Main loop adds some chunks
-    for _ in range(3):
-        with client._buffer_lock:
-            client._recording_buffer.append(np.zeros(1024, dtype=np.int16))
-
-    # Release grabs the buffer atomically
-    client._on_ptt_release()
-
-    # Simulate main loop trying to append after release
-    chunk = np.zeros(1024, dtype=np.int16)
+    wait_for(lambda: client.hermes.send_audio_and_get_response.called)
     with client._buffer_lock:
-        if client._recording:  # Should be False
-            client._recording_buffer.append(chunk)
+        assert client._recording_buffer == []
 
-    # Buffer should be empty — release cleared it and recording is False
-    with client._buffer_lock:
-        assert len(client._recording_buffer) == 0
 
-    # Hermes got all 3 chunks
-    time.sleep(0.5)
-    args = client.hermes.send_audio_and_get_response.call_args
-    audio_sent = args[0][0]
-    assert len(audio_sent) == 3 * 1024
+def test_play_response_is_serialized_across_threads(client):
+    """Playback threads should not overlap writes to the audio output."""
+    active_calls = 0
+    max_active_calls = 0
+
+    def write_chunk(_chunk):
+        nonlocal active_calls, max_active_calls
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        time.sleep(0.01)
+        active_calls -= 1
+
+    client.audio_output.write_chunk.side_effect = write_chunk
+    audio = np.arange(4096, dtype=np.int16)
+
+    first = Thread(target=client._play_response, args=(audio,), daemon=True)
+    second = Thread(target=client._play_response, args=(audio,), daemon=True)
+    first.start()
+    second.start()
+    first.join(timeout=1.0)
+    second.join(timeout=1.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert max_active_calls == 1
+
+
+def test_transcript_logging_is_gated_by_debug_flag(client, caplog):
+    """Response text should only be logged when debug transcript logging is enabled."""
+    secret = "top secret response"
+    client.hermes.send_audio_and_get_response.return_value = (secret, np.zeros(0, dtype=np.int16))
+    caplog.set_level("INFO")
+
+    client._hermes_worker(np.zeros(64, dtype=np.int16))
+
+    assert secret not in caplog.text
+
+    debug_client = PiAudioClient(make_config(debug_log_transcripts=True))
+    debug_client.led = MagicMock()
+    debug_client.audio_input = MagicMock()
+    debug_client.audio_output = MagicMock()
+    debug_client.hermes = MagicMock()
+    debug_client.hermes.send_audio_and_get_response.return_value = (
+        secret,
+        np.zeros(0, dtype=np.int16),
+    )
+
+    client_log_start = len(caplog.records)
+    debug_client._hermes_worker(np.zeros(64, dtype=np.int16))
+    new_messages = " ".join(record.getMessage() for record in caplog.records[client_log_start:])
+    assert secret in new_messages

@@ -1,11 +1,10 @@
 """Button control for Pi Audio Client."""
 
-from gpiozero import Button
-from signal import pause
-from threading import Lock, Event
-from typing import Optional, Callable
 import logging
-import time
+from threading import Event, Lock
+from typing import Callable, Optional
+
+from gpiozero import Button
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +85,7 @@ class ButtonController:
             True if button was pressed, False if timeout
         """
         try:
-            self._ptt_pressed.wait(timeout=timeout)
-            return True
+            return self._ptt_pressed.wait(timeout=timeout)
         except (KeyboardInterrupt, Exception):
             return False
 
@@ -104,8 +102,7 @@ class ButtonController:
             return False
 
         try:
-            self._cancel_pressed.wait(timeout=timeout)
-            return True
+            return self._cancel_pressed.wait(timeout=timeout)
         except (KeyboardInterrupt, Exception):
             return False
 
@@ -115,39 +112,3 @@ class ButtonController:
         if self.cancel_button:
             self.cancel_button.close()
         logger.debug("Button controller cleanup complete")
-
-
-class ButtonEventHandler:
-    """Event handler for button state changes."""
-
-    def __init__(self):
-        self._ptt_callbacks = []
-        self._cancel_callbacks = []
-
-    def on_ptt_press(self, callback: Callable[[], None]) -> None:
-        """Register callback for PTT press."""
-        self._ptt_callbacks.append(callback)
-
-    def on_ptt_release(self, callback: Callable[[], None]) -> None:
-        """Register callback for PTT release."""
-        pass
-
-    def on_cancel_press(self, callback: Callable[[], None]) -> None:
-        """Register callback for cancel press."""
-        self._cancel_callbacks.append(callback)
-
-    def execute_ptt_press(self) -> None:
-        """Execute all PTT press callbacks."""
-        for callback in self._ptt_callbacks:
-            try:
-                callback()
-            except Exception as e:
-                logger.error(f"PTT callback error: {e}")
-
-    def execute_cancel_press(self) -> None:
-        """Execute all cancel press callbacks."""
-        for callback in self._cancel_callbacks:
-            try:
-                callback()
-            except Exception as e:
-                logger.error(f"Cancel callback error: {e}")

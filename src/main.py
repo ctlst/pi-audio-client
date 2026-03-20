@@ -13,11 +13,11 @@ Interaction model:
 - Responses queue up and green LED blinks when messages are waiting
 """
 
+import queue
 import logging
 import signal
 import time
-import queue
-from threading import Thread, Event, Lock
+from threading import Event, Lock, Thread
 from typing import Optional
 
 import numpy as np
@@ -33,12 +33,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Hold vs tap threshold (seconds)
-HOLD_THRESHOLD = 0.5
-# Maximum recording duration (seconds)
-MAX_RECORDING_SECS = 30
-
 
 class PiAudioClient:
     """Main client for Pi Audio interface."""
@@ -89,6 +83,9 @@ class PiAudioClient:
         self._playing = False
         self._stop_playback = Event()
         self._last_audio: Optional[np.ndarray] = None
+        self._playback_state_lock = Lock()
+        self._playback_lock = Lock()
+        self._playback_scheduled = False
 
         # Message queue — hermes responses waiting to be played
         self._message_queue: queue.Queue = queue.Queue()
@@ -136,7 +133,10 @@ class PiAudioClient:
 
     def _record_loop(self) -> None:
         """Read audio chunks while recording (runs in dedicated thread)."""
-        max_chunks = int((self.config.audio.sample_rate * MAX_RECORDING_SECS) / self.config.audio.chunk_size)
+        max_chunks = int(
+            (self.config.audio.sample_rate * self.config.state.max_recording_secs)
+            / self.config.audio.chunk_size
+        )
         chunks_read = 0
         while self._recording and not self._shutdown_event.is_set():
             try:
@@ -146,7 +146,7 @@ class PiAudioClient:
                         self._recording_buffer.append(chunk)
                 chunks_read += 1
                 if chunks_read >= max_chunks:
-                    logger.warning("Recording capped at %ds", MAX_RECORDING_SECS)
+                    logger.warning("Recording capped at %ds", self.config.state.max_recording_secs)
                     self._recording = False
                     break
             except Exception as e:
@@ -197,14 +197,22 @@ class PiAudioClient:
 
     def _play_next_message(self) -> None:
         """Play the next message from the queue."""
-        if self._message_queue.empty():
+        if not self._reserve_playback_slot():
+            logger.info("Playback already in progress")
+            return
+        try:
+            text, audio = self._message_queue.get_nowait()
+        except queue.Empty:
             logger.info("No messages to play")
+            self._release_playback_slot()
             self._update_led()
             return
 
-        text, audio = self._message_queue.get()
-        logger.info("Playing: %s", text[:80])
-        Thread(target=self._play_response, args=(audio,), daemon=True).start()
+        if self.config.debug_log_transcripts:
+            logger.info("Playing: %s", text[:80])
+        else:
+            logger.info("Playing queued response")
+        self._spawn_playback_thread(audio)
 
     # ------------------------------------------------------------------
     # Cancel button
@@ -212,14 +220,23 @@ class PiAudioClient:
 
     def _on_cancel_pressed(self) -> None:
         """Cancel button — stop playback if playing, otherwise replay last."""
-        if self._playing:
-            logger.info("Stopping playback")
-            self._stop_playback.set()
-        elif self._last_audio is not None and len(self._last_audio) > 0:
-            logger.info("Replaying last response")
-            Thread(target=self._play_response, args=(self._last_audio,), daemon=True).start()
-        else:
-            logger.info("Cancel — nothing to replay")
+        with self._playback_state_lock:
+            if self._playing:
+                logger.info("Stopping playback")
+                self._stop_playback.set()
+                return
+
+            if self._last_audio is None or len(self._last_audio) == 0:
+                logger.info("Cancel — nothing to replay")
+                return
+
+            replay_audio = self._last_audio
+        if not self._reserve_playback_slot():
+            logger.info("Playback already in progress")
+            return
+
+        logger.info("Replaying last response")
+        self._spawn_playback_thread(replay_audio)
 
     # ------------------------------------------------------------------
     # Hermes worker (background thread)
@@ -233,7 +250,10 @@ class PiAudioClient:
                 self.config.audio.sample_rate
             )
 
-            logger.info("Response: %s", response_text[:100])
+            if self.config.debug_log_transcripts:
+                logger.info("Response: %s", response_text[:100])
+            else:
+                logger.info("Received response from hermes")
 
             if len(tts_audio) > 0:
                 self._message_queue.put((response_text, tts_audio))
@@ -253,23 +273,46 @@ class PiAudioClient:
     # Audio playback
     # ------------------------------------------------------------------
 
+    def _reserve_playback_slot(self) -> bool:
+        """Reserve the playback worker so only one playback can be scheduled at a time."""
+        with self._playback_state_lock:
+            if self._playing or self._playback_scheduled:
+                return False
+            self._playback_scheduled = True
+            return True
+
+    def _release_playback_slot(self) -> None:
+        """Release a playback slot when no worker was started."""
+        with self._playback_state_lock:
+            self._playback_scheduled = False
+
+    def _spawn_playback_thread(self, audio_data: np.ndarray) -> None:
+        """Start a playback worker after a slot has been reserved."""
+        Thread(target=self._play_response, args=(audio_data,), daemon=True).start()
+
     def _play_response(self, audio_data: np.ndarray) -> None:
         """Play audio response through speaker."""
-        self._playing = True
-        self._stop_playback.clear()
-        self._last_audio = audio_data
-        self.led.set_speaking()
+        with self._playback_lock:
+            with self._playback_state_lock:
+                self._playback_scheduled = False
+                self._playing = True
 
-        chunk_size = self.config.audio.chunk_size
-        for i in range(0, len(audio_data), chunk_size):
-            if self._shutdown_event.is_set() or self._stop_playback.is_set():
-                logger.info("Playback stopped")
-                break
-            chunk = audio_data[i:i + chunk_size]
-            self.audio_output.write_chunk(chunk)
+            self._stop_playback.clear()
+            self._last_audio = audio_data
+            self.led.set_speaking()
 
-        self._playing = False
-        self._update_led()
+            try:
+                chunk_size = self.config.audio.chunk_size
+                for i in range(0, len(audio_data), chunk_size):
+                    if self._shutdown_event.is_set() or self._stop_playback.is_set():
+                        logger.info("Playback stopped")
+                        break
+                    chunk = audio_data[i:i + chunk_size]
+                    self.audio_output.write_chunk(chunk)
+            finally:
+                with self._playback_state_lock:
+                    self._playing = False
+                self._update_led()
 
     # ------------------------------------------------------------------
     # LED state management
@@ -313,7 +356,7 @@ class PiAudioClient:
                 self._on_ptt_pressed()
             elif pressed and not self._recording and self._press_time > 0:
                 # Still holding — start recording once past threshold
-                if time.time() - self._press_time >= HOLD_THRESHOLD:
+                if time.time() - self._press_time >= self.config.state.hold_threshold:
                     self._start_recording()
             elif was_pressed and not pressed:
                 self._on_ptt_released()

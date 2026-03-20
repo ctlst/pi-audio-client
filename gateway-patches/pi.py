@@ -56,8 +56,9 @@ class PiAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.PI)
-        self._port = int(config.extra.get("http_port", 8099))
-        self._api_key = config.api_key
+        self._port = int(config.extra.get("port", 8099))
+        self._api_key = config.extra.get("api_key") or config.api_key
+        self._debug_log_transcripts = bool(config.extra.get("debug_log_transcripts", False))
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -177,7 +178,10 @@ class PiAdapter(BasePlatformAdapter):
         try:
             response = await self._message_handler(event)
             if response:
-                logger.info("[Pi] Agent response (first 500 chars): %s", response[:500])
+                if self._debug_log_transcripts:
+                    logger.info("[Pi] Agent response (first 500 chars): %s", response[:500])
+                else:
+                    logger.info("[Pi] Agent response ready")
                 # The handler returns the full response text.
                 # Route it through send() which resolves the future.
                 await self.send(

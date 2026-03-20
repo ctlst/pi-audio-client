@@ -145,6 +145,23 @@ def test_recording_buffer_cleared_after_hold_release(client):
         assert client._recording_buffer == []
 
 
+def test_empty_recording_restarts_audio_streams(client):
+    """An empty hold should trigger audio I/O recovery instead of silently idling."""
+    client.audio_input.restart = MagicMock()
+    client.audio_output.restart = MagicMock()
+    client._on_ptt_pressed()
+    mark_recording_active(client)
+
+    with client._buffer_lock:
+        client._recording_buffer = []
+
+    client._on_ptt_released()
+
+    client.audio_input.restart.assert_called_once()
+    client.audio_output.restart.assert_called_once()
+    client.hermes.send_audio_and_get_response.assert_not_called()
+
+
 def test_play_response_is_serialized_across_threads(client):
     """Playback threads should not overlap writes to the audio output."""
     active_calls = 0

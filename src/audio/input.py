@@ -57,14 +57,22 @@ class AudioInput:
     def stop(self) -> None:
         """Stop audio input."""
         if self._stream:
-            self._stream.stop_stream()
-            self._stream.close()
+            try:
+                self._stream.stop_stream()
+            finally:
+                self._stream.close()
             self._stream = None
         if self._pa:
             self._pa.terminate()
             self._pa = None
         self._recording = False
         logger.debug("Audio input stopped")
+
+    def restart(self) -> None:
+        """Reinitialize the input stream after a capture fault."""
+        logger.warning("Restarting audio input stream")
+        self.stop()
+        self.start()
 
     def is_recording(self) -> bool:
         return self._recording

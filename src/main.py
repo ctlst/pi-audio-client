@@ -184,6 +184,7 @@ class PiAudioClient:
 
         if not buffer:
             logger.warning("No audio recorded")
+            self._recover_audio_io("empty recording buffer after hold")
             self._update_led()
             return
 
@@ -425,6 +426,18 @@ class PiAudioClient:
                     self._playback_scheduled = False
                     self._playback_done.set()
             self._update_led()
+
+    def _recover_audio_io(self, reason: str) -> None:
+        """Restart audio streams after a capture or playback fault."""
+        logger.warning("Recovering audio I/O: %s", reason)
+        try:
+            self.audio_input.restart()
+        except Exception:
+            logger.exception("Failed to restart audio input")
+        try:
+            self.audio_output.restart()
+        except Exception:
+            logger.exception("Failed to restart audio output")
 
     # ------------------------------------------------------------------
     # LED state management

@@ -36,6 +36,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 RESET_HOLD_SECS = 3.0
+PLAYBACK_WATCHDOG_MARGIN_SECS = 5.0
+PLAYBACK_CANCEL_GRACE_SECS = 1.0
 
 class PiAudioClient:
     """Main client for Pi Audio interface."""
@@ -91,6 +93,8 @@ class PiAudioClient:
         self._playback_state_lock = Lock()
         self._playback_lock = Lock()
         self._playback_scheduled = False
+        self._playback_done = Event()
+        self._playback_id = 0
 
         # Message queue — hermes responses waiting to be played
         self._message_queue: queue.Queue = queue.Queue()
@@ -229,6 +233,13 @@ class PiAudioClient:
             if self._playing:
                 logger.info("Stopping playback")
                 self._stop_playback.set()
+                playback_id = self._playback_id
+                done_event = self._playback_done
+                Thread(
+                    target=self._cancel_playback_watchdog,
+                    args=(playback_id, done_event),
+                    daemon=True,
+                ).start()
                 return
 
             if self._last_audio is None or len(self._last_audio) == 0:
@@ -342,9 +353,20 @@ class PiAudioClient:
 
     def _spawn_playback_thread(self, audio_data: np.ndarray) -> None:
         """Start a playback worker after a slot has been reserved."""
-        Thread(target=self._play_response, args=(audio_data,), daemon=True).start()
+        duration_secs = len(audio_data) / self.config.audio.sample_rate
+        with self._playback_state_lock:
+            self._playback_id += 1
+            playback_id = self._playback_id
+            self._playback_done = Event()
+            done_event = self._playback_done
+        Thread(target=self._play_response, args=(audio_data, playback_id, done_event), daemon=True).start()
+        Thread(
+            target=self._playback_watchdog,
+            args=(playback_id, done_event, duration_secs),
+            daemon=True,
+        ).start()
 
-    def _play_response(self, audio_data: np.ndarray) -> None:
+    def _play_response(self, audio_data: np.ndarray, playback_id: int, done_event: Event) -> None:
         """Play audio response through speaker."""
         with self._playback_lock:
             with self._playback_state_lock:
@@ -364,9 +386,45 @@ class PiAudioClient:
                     chunk = audio_data[i:i + chunk_size]
                     self.audio_output.write_chunk(chunk)
             finally:
+                done_event.set()
                 with self._playback_state_lock:
-                    self._playing = False
+                    if self._playback_id == playback_id:
+                        self._playing = False
                 self._update_led()
+
+    def _playback_watchdog(self, playback_id: int, done_event: Event, duration_secs: float) -> None:
+        """Recover if playback does not complete near its expected duration."""
+        timeout = max(duration_secs + PLAYBACK_WATCHDOG_MARGIN_SECS, PLAYBACK_WATCHDOG_MARGIN_SECS)
+        if done_event.wait(timeout=timeout):
+            return
+        logger.warning("Playback watchdog fired after %.1fs", timeout)
+        self._force_reset_playback(playback_id)
+
+    def _cancel_playback_watchdog(self, playback_id: int, done_event: Event) -> None:
+        """Escalate cancel if playback does not stop promptly."""
+        if done_event.wait(timeout=PLAYBACK_CANCEL_GRACE_SECS):
+            return
+        logger.warning("Playback cancel watchdog fired")
+        self._force_reset_playback(playback_id)
+
+    def _force_reset_playback(self, playback_id: int) -> None:
+        """Force-clear playback state and reinitialize output after a stuck write."""
+        with self._playback_state_lock:
+            if self._playback_id != playback_id:
+                return
+            self._stop_playback.set()
+
+        try:
+            self.audio_output.restart()
+        except Exception:
+            logger.exception("Failed to restart audio output during playback recovery")
+        finally:
+            with self._playback_state_lock:
+                if self._playback_id == playback_id:
+                    self._playing = False
+                    self._playback_scheduled = False
+                    self._playback_done.set()
+            self._update_led()
 
     # ------------------------------------------------------------------
     # LED state management

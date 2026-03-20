@@ -2,7 +2,7 @@
 
 import sys
 import time
-from threading import Thread
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -159,9 +159,11 @@ def test_play_response_is_serialized_across_threads(client):
 
     client.audio_output.write_chunk.side_effect = write_chunk
     audio = np.arange(4096, dtype=np.int16)
+    first_done = Event()
+    second_done = Event()
 
-    first = Thread(target=client._play_response, args=(audio,), daemon=True)
-    second = Thread(target=client._play_response, args=(audio,), daemon=True)
+    first = Thread(target=client._play_response, args=(audio, 1, first_done), daemon=True)
+    second = Thread(target=client._play_response, args=(audio, 2, second_done), daemon=True)
     first.start()
     second.start()
     first.join(timeout=1.0)
@@ -196,6 +198,33 @@ def test_transcript_logging_is_gated_by_debug_flag(client, caplog):
     debug_client._hermes_worker(np.zeros(64, dtype=np.int16))
     new_messages = " ".join(record.getMessage() for record in caplog.records[client_log_start:])
     assert secret in new_messages
+
+
+def test_force_reset_playback_restarts_audio_output_and_clears_state(client):
+    """Forced playback recovery should restart output and clear the speaking state."""
+    client.audio_output.restart = MagicMock()
+    client._playback_done = Event()
+    client._playback_id = 7
+    client._playing = True
+    client._playback_scheduled = True
+
+    client._force_reset_playback(7)
+
+    client.audio_output.restart.assert_called_once()
+    assert client._playing is False
+    assert client._playback_scheduled is False
+    assert client._playback_done.is_set() is True
+    client.led.set_idle.assert_called()
+
+
+def test_cancel_watchdog_forces_reset_when_playback_does_not_stop(client):
+    """Cancel should escalate to a forced reset when playback remains wedged."""
+    client._force_reset_playback = MagicMock()
+    done_event = Event()
+
+    client._cancel_playback_watchdog(11, done_event)
+
+    client._force_reset_playback.assert_called_once_with(11)
 
 
 def test_dual_button_hold_triggers_reset_after_threshold(client):

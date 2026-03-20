@@ -58,13 +58,21 @@ class AudioOutput:
         """Stop audio output."""
         self._playing = False
         if self._stream:
-            self._stream.stop_stream()
-            self._stream.close()
+            try:
+                self._stream.stop_stream()
+            finally:
+                self._stream.close()
             self._stream = None
         if self._pa:
             self._pa.terminate()
             self._pa = None
         logger.debug("Audio output stopped")
+
+    def restart(self) -> None:
+        """Reinitialize the output stream after a playback fault."""
+        logger.warning("Restarting audio output stream")
+        self.stop()
+        self.start()
 
     def is_playing(self) -> bool:
         return self._playing

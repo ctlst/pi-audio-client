@@ -15,6 +15,7 @@ Interaction model:
 
 import queue
 import logging
+import subprocess
 import signal
 import time
 from threading import Event, Lock, Thread
@@ -33,6 +34,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+RESET_HOLD_SECS = 3.0
 
 class PiAudioClient:
     """Main client for Pi Audio interface."""
@@ -78,6 +81,8 @@ class PiAudioClient:
         self._buffer_lock = Lock()
         self._press_time = 0.0
         self._record_thread: Optional[Thread] = None
+        self._dual_hold_started_at: Optional[float] = None
+        self._dual_hold_triggered = False
 
         # Playback state
         self._playing = False
@@ -238,6 +243,55 @@ class PiAudioClient:
         logger.info("Replaying last response")
         self._spawn_playback_thread(replay_audio)
 
+    def _handle_dual_button_reset(
+        self,
+        ptt_pressed: bool,
+        cancel_pressed: bool,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Detect a long press on both buttons and reboot the Pi.
+
+        Returns True when normal single-button handling should be suppressed.
+        """
+        if not cancel_pressed or not ptt_pressed:
+            self._dual_hold_started_at = None
+            self._dual_hold_triggered = False
+            return False
+
+        if self._dual_hold_triggered:
+            return True
+
+        now = now if now is not None else time.time()
+        if self._dual_hold_started_at is None:
+            self._dual_hold_started_at = now
+            logger.info("Both buttons pressed — hold for %.1fs to reboot", RESET_HOLD_SECS)
+            return True
+
+        if now - self._dual_hold_started_at < RESET_HOLD_SECS:
+            return True
+
+        self._dual_hold_triggered = True
+        self._trigger_system_reset()
+        return True
+
+    def _trigger_system_reset(self) -> None:
+        """Reboot the Pi after a deliberate dual-button hold."""
+        logger.warning("Dual-button reset triggered — rebooting system")
+        self._stop_playback.set()
+        self._shutdown_event.set()
+        try:
+            self.led.set_error()
+        except Exception:
+            logger.exception("Failed to set error LED before reboot")
+        Thread(target=self._reboot_system, daemon=True).start()
+
+    def _reboot_system(self) -> None:
+        """Issue the reboot command in a background thread."""
+        try:
+            subprocess.run(["sudo", "reboot"], check=True)
+        except Exception:
+            logger.exception("Failed to reboot system")
+
     # ------------------------------------------------------------------
     # Hermes worker (background thread)
     # ------------------------------------------------------------------
@@ -351,6 +405,14 @@ class PiAudioClient:
         was_pressed = False
         while not self._shutdown_event.is_set():
             pressed = self.buttons.ptt_button.is_pressed
+            cancel_pressed = (
+                self.buttons.cancel_button.is_pressed if self.buttons.cancel_button else False
+            )
+
+            if self._handle_dual_button_reset(pressed, cancel_pressed):
+                was_pressed = pressed
+                time.sleep(0.02)
+                continue
 
             if pressed and not was_pressed:
                 self._on_ptt_pressed()
@@ -391,21 +453,32 @@ def main():
     config = load_config()
     logger.info(f"Loaded config: {config}")
 
-    client = PiAudioClient(config)
+    client: Optional[PiAudioClient] = None
 
     def signal_handler(sig, frame):
         logger.info("Shutdown signal received")
-        client._shutdown_event.set()
+        if client is not None:
+            client._shutdown_event.set()
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
+        client = PiAudioClient(config)
         client.run()
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+    except Exception:
+        logger.exception("Pi Audio Client crashed")
+        if client is not None:
+            try:
+                client.led.set_error()
+                time.sleep(10)
+            except Exception:
+                logger.exception("Failed to signal error state on LED")
     finally:
-        client.cleanup()
+        if client is not None:
+            client.cleanup()
 
 
 if __name__ == "__main__":

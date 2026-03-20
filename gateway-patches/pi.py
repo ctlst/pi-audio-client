@@ -17,6 +17,7 @@ Architecture:
 import asyncio
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -33,6 +34,36 @@ from gateway.platforms.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001F5FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FAFF"
+    "\U00002700-\U000027BF"
+    "\U00002600-\U000026FF"
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def sanitize_spoken_text(text: str) -> str:
+    """Strip styling artifacts that sound awkward in TTS."""
+    cleaned = text.replace("\r\n", "\n")
+    cleaned = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", cleaned)
+    cleaned = re.sub(r"(?<!\w)#([A-Za-z0-9_]+)", r"\1", cleaned)
+    cleaned = cleaned.replace("**", "").replace("__", "")
+    cleaned = cleaned.replace("`", "")
+    cleaned = EMOJI_PATTERN.sub("", cleaned)
+    cleaned = cleaned.replace("\ufe0f", "")
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def check_pi_requirements() -> bool:
@@ -119,6 +150,7 @@ class PiAdapter(BasePlatformAdapter):
         # Extract MEDIA tags to find TTS audio path
         media_files, clean_text = self.extract_media(content)
 
+        clean_text = sanitize_spoken_text(clean_text)
         audio_url = None
         if media_files:
             media_path = media_files[0][0]  # first file

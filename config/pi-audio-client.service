@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/pi-audio-client
+WorkingDirectory=/home/pi/projects/pi-audio-client
 ExecStart=/usr/bin/python3 -m src.main
 Restart=on-failure
 RestartSec=5

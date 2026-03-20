@@ -196,3 +196,29 @@ def test_transcript_logging_is_gated_by_debug_flag(client, caplog):
     debug_client._hermes_worker(np.zeros(64, dtype=np.int16))
     new_messages = " ".join(record.getMessage() for record in caplog.records[client_log_start:])
     assert secret in new_messages
+
+
+def test_dual_button_hold_triggers_reset_after_threshold(client):
+    """Holding both buttons long enough should trigger a reboot path once."""
+    client._trigger_system_reset = MagicMock()
+
+    assert client._handle_dual_button_reset(True, True, now=10.0) is True
+    client._trigger_system_reset.assert_not_called()
+
+    assert client._handle_dual_button_reset(True, True, now=12.9) is True
+    client._trigger_system_reset.assert_not_called()
+
+    assert client._handle_dual_button_reset(True, True, now=13.1) is True
+    client._trigger_system_reset.assert_called_once()
+
+
+def test_dual_button_hold_resets_when_one_button_released(client):
+    """Releasing either button should cancel the pending reset timer."""
+    client._trigger_system_reset = MagicMock()
+
+    assert client._handle_dual_button_reset(True, True, now=20.0) is True
+    assert client._handle_dual_button_reset(True, False, now=21.0) is False
+    assert client._handle_dual_button_reset(True, True, now=22.0) is True
+    assert client._handle_dual_button_reset(True, True, now=24.9) is True
+
+    client._trigger_system_reset.assert_not_called()
